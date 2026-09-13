@@ -85,21 +85,19 @@ data/carrier_tracking.csv   ─┘                                              
                                              output/exception_report.csv (severity, owner, action)
 ```
 
-Four design decisions worth calling out:
+The join is an outer join. Records that exist on only one side are not a data problem to be
+dropped, they are the missing-order exceptions the tool exists to find.
 
-**The join is an outer join.** Records that exist on only one side are not a data problem to be
-dropped, they are the "missing order" exceptions the tool is looking for.
+Each rule is its own function, taking one reconciled order and answering one question. So an order
+can raise more than one exception. An order that was cancelled and is already moving through the
+carrier network really does need two teams doing two different things about it.
 
-**Rules are independent functions.** Each rule takes one reconciled order and answers one question.
-That means an order can raise more than one exception, which is the honest outcome: an order that is
-both cancelled and already in the carrier network really does need two different teams to act.
+SLA thresholds, severities, escalation owners and the suggested-action wording all live in
+`src/config.py`. Changing a dispatch SLA from 48 hours to 24 is a one-line edit rather than a code
+change.
 
-**Nothing operational is hard-coded in the rules.** SLA thresholds, severities, escalation owners and
-suggested-action templates all live in `src/config.py`. Changing a dispatch SLA from 48 to 24 hours
-is a one-line edit, not a code change.
-
-**Ages are always computed from timestamps.** No dataset stores an age. Everything is measured
-against a reference "now", which is fixed in config so the demo results stay reproducible.
+Nothing stores an age. Every age in the report is worked out from timestamps against a reference
+"now", which is fixed in config so the demo stays reproducible.
 
 ### The fixed reference time
 
@@ -144,7 +142,7 @@ against the real clock instead.
 | `last_tracking_update` | Last scan event |
 | `estimated_delivery_date` | Carrier promise |
 
-The three files do not line up on purpose. Only dispatched orders have tracking rows, two
+The three files are supposed to disagree. Only dispatched orders have tracking rows, two
 marketplace orders have no warehouse record, and one warehouse record (`W9001`) has no marketplace
 order behind it.
 
@@ -214,21 +212,23 @@ and Critical at 66 hours over, without a second rule being written.
 
 ## How escalation ownership is determined
 
-Ownership is a fixed property of each rule in `src/config.py`, and it follows one question: **who is
-the only team that can actually fix this?**
+Ownership is a fixed property of each rule in `src/config.py`. It follows one question: who is the
+only team that can actually fix this?
 
-- **Warehouse** owns anything where the physical operation is the problem or the source of truth.
-  An order the warehouse never received, a cancelled order it shipped anyway, a pick that has not
-  started, a pallet that missed collection.
-- **Seller / Marketplace** owns anything where the physical operation is correct and the buyer-facing
-  record is wrong. Dispatched but not marked shipped, delivered but still Processing, marked shipped
-  before it actually was, and stock dispatched against an order the marketplace feed never sent.
-- **Carrier** owns anything that happens after the parcel leaves the building. No consignment raised,
-  no tracking number, no scans, no movement, failed delivery, or a cancelled parcel that needs
-  intercepting.
+The warehouse owns anything where the physical operation is either the problem or the source of
+truth. An order it never received, a cancelled order it shipped anyway, a pick that never started, a
+pallet that missed its collection.
 
-Because ownership is attached to the rule rather than to the order, a single order can escalate to
-two teams at once. `E2005` does exactly that below.
+The seller owns the opposite case, where the physical side went fine and the buyer-facing record is
+wrong. Dispatched but not marked shipped, delivered but still showing as Processing, marked shipped
+before it actually was. Stock dispatched against an order the marketplace feed never sent lands here
+too, because the feed is the thing that broke.
+
+The carrier owns everything after the parcel leaves the building: no consignment raised, no tracking
+number, no scans, no movement, a failed delivery, or a cancelled parcel that needs intercepting.
+
+Because ownership sits on the rule rather than on the order, one order can escalate to two teams at
+once. `E2005` below does exactly that.
 
 ---
 
@@ -398,8 +398,8 @@ order_id marketplace                 exception_type severity     escalation_owne
 Report written to output/exception_report.csv
 ```
 
-41 orders analysed against 40 marketplace orders is not a bug. The extra one is `W9001`, the
-warehouse record with no marketplace order behind it, and finding it is the point.
+The count says 41 orders against 40 marketplace orders. The extra one is `W9001`, the warehouse
+record with no marketplace order behind it. It gets counted because it gets checked.
 
 ---
 
@@ -488,14 +488,18 @@ either differs from what is committed, so the reproducibility claim above stays 
 
 ## Possible next steps
 
-- **Persist exception state** so the report can show first-seen, age-of-exception and resolution,
-  and so the same open problem stops reappearing as though it were new.
-- **Working-hours SLA clock**, with carrier cut-off times and non-working days per warehouse.
-- **Per-marketplace and per-carrier SLA overrides**, since Amazon's dispatch expectations and a
-  small Shopify store's are not the same number.
-- **Push the output where the work happens**: a Slack or email digest per escalation owner, or
-  tickets raised straight into a helpdesk, rather than a CSV someone has to remember to open.
-- **Value-weighted severity**, so a stale £400 parcel outranks a stale £6 one.
-- **A small dashboard** showing exception volume by owner and rule over time, which turns the tool
-  from a daily checklist into a way of proving which of the three systems is actually the problem.
-- **Real connectors** to marketplace, WMS and carrier APIs to replace the CSV drop.
+The gap I would close first is state between runs. At the moment the report cannot tell a problem it
+has never seen before from one that has been open a week, and nothing is ever marked as resolved, so
+the same 21 lines come back every morning looking new.
+
+After that, roughly in the order I think they would earn their keep:
+
+- A working-hours SLA clock, with carrier cut-off times and non-working days per warehouse.
+- Per-marketplace and per-carrier SLA overrides. Amazon's dispatch expectations and a small Shopify
+  store's are not the same number and should not share a threshold.
+- Sending the output where the work actually happens, as a digest per escalation owner or tickets
+  raised straight into a helpdesk, rather than a CSV somebody has to remember to open.
+- Severity weighted by order value, so a stale £400 parcel outranks a stale £6 one.
+- Exception volume by owner and rule over time, which would start to show which of the three systems
+  is the unreliable one.
+- Real connectors to marketplace, WMS and carrier APIs instead of a CSV drop.
