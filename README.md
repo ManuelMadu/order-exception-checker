@@ -10,6 +10,46 @@ All customer names, order IDs, SKUs, tracking numbers and timestamps in this rep
 
 ---
 
+## In plain English
+
+Imagine you have a toy shop, and three people tell you about every toy that gets sold.
+
+1. The **shop person** takes the money and tells the customer "your toy is coming!"
+2. The **box person** goes to the shelf, finds the toy, and puts it in a box.
+3. The **van person** drives the box to the customer's house.
+
+Most of the time all three say the same thing, and there is nothing to do.
+
+But sometimes they disagree, and that is when something has gone wrong.
+
+- The shop person says "we cancelled that order" but the box person already sent it. The toy is
+  driving away and nobody is paying for it.
+- The shop person told the customer "it's on its way" but the box person has not even found the toy
+  yet. The customer is waiting for something that is not moving.
+- The van person says "I delivered it three days ago" but the shop person still says "we're getting
+  it ready." The customer already has their toy and is being told it is still in the shop.
+- The box person put the toy in the van, and then the van went quiet. No "I'm driving", no "I'm
+  here", just quiet, for three days. Nobody knows where the toy is.
+
+**This project is the grown-up who listens to all three and spots the arguments.**
+
+It reads what each one says, lines them up side by side, and asks 17 small questions like "does the
+shop person agree with the box person?" and "has the van been quiet for too long?"
+
+Then it writes a list. The worst problems go at the top. Next to each one it writes **who needs to
+fix it** and **what they should do**, because the shop person cannot fix a quiet van, and the van
+person cannot fix a toy that nobody put in a box.
+
+That list is the whole point. Instead of one person reading three long files and trying to spot the
+arguments by eye, the computer hands them a short list that says: here are the things that are
+wrong, worst first, go and fix these.
+
+The rest of this README is the same idea with the real words. The shop person is a marketplace like
+Amazon, eBay or Shopify. The box person is a warehouse. The van person is a carrier like Royal Mail,
+DPD or Evri.
+
+---
+
 ## The business problem
 
 A seller taking orders on Amazon, eBay and Shopify ends up with three separate views of the same
