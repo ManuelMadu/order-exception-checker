@@ -44,7 +44,7 @@ def check_missing_warehouse_record(order: OrderView) -> List[Finding]:
         return []  # a cancelled order never reaching the warehouse is fine
     age = order.order_age_hours
     # Not there *yet* is not an exception; the warehouse feed arrives on a delay.
-    if age is not None and age <= SLA["warehouse_sync"]:
+    if age is not None and 0 <= age <= SLA["warehouse_sync"]:
         return []
     return [
         _breach(
@@ -82,7 +82,7 @@ def check_missing_tracking_record(order: OrderView) -> List[Finding]:
     if not order.warehouse_dispatched or order.has_tracking_record:
         return []
     age = order.hours_since(order.dispatched_at)
-    if age is not None and age <= SLA["tracking_sync"]:
+    if age is not None and 0 <= age <= SLA["tracking_sync"]:
         return []  # the carrier feed has not caught up with the dispatch yet
     return [
         _breach(
@@ -118,17 +118,26 @@ def check_cancelled_but_fulfilled(order: OrderView) -> List[Finding]:
 
 
 def check_carrier_active_on_cancelled_order(order: OrderView) -> List[Finding]:
-    """A cancelled order is moving through the carrier network."""
-    if order.marketplace_status != "Cancelled":
+    """A cancelled order is moving through the carrier network.
+
+    Either side cancelling is enough. The parcel is physically in the network
+    and needs intercepting whichever system cancelled it, so this deliberately
+    does not key off the marketplace status alone.
+    """
+    if not order.is_cancelled:
         return []
     if order.carrier_status not in config.CARRIER_ACTIVE_STATUSES:
         return []
+    cancelled_by = (
+        "the marketplace" if order.marketplace_status == "Cancelled" else "the warehouse"
+    )
     age = order.hours_since_tracking_update
     return [
         _breach(
             order,
             "CARRIER_ACTIVE_ON_CANCELLED_ORDER",
-            f"Order is cancelled but {order.carrier} reports {order.carrier_status}.",
+            f"Order was cancelled by {cancelled_by} but {order.carrier} reports "
+            f"{order.carrier_status}.",
             age,
         )
     ]
@@ -163,6 +172,8 @@ def check_dispatch_not_reflected(order: OrderView) -> List[Finding]:
     if order.carrier_status == "Delivered":
         return []  # the stronger "delivered but not updated" rule covers this
     age = order.hours_since(order.dispatched_at)
+    if age is not None and 0 <= age <= SLA["marketplace_update"]:
+        return []  # the marketplace is allowed a window to catch up
     return [
         _breach(
             order,
@@ -316,7 +327,7 @@ def check_missing_tracking_number(order: OrderView) -> List[Finding]:
     if order.tracking_number:
         return []
     age = order.hours_since(order.dispatched_at)
-    if age is not None and age <= SLA["tracking_sync"]:
+    if age is not None and 0 <= age <= SLA["tracking_sync"]:
         return []  # a number may still be on its way from the carrier
     return [
         _breach(
@@ -340,7 +351,7 @@ def check_no_tracking_events(order: OrderView) -> List[Finding]:
     age = order.hours_since(order.dispatched_at)
     if age is None:
         age = order.order_age_hours
-    if age is not None and age <= SLA["tracking_sync"]:
+    if age is not None and 0 <= age <= SLA["tracking_sync"]:
         return []  # the first scan has not happened yet
     return [
         _breach(

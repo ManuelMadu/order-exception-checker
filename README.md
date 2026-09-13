@@ -166,7 +166,7 @@ is asserted by a test.
 | Rule | Fires when | Severity | Owner |
 |---|---|---|---|
 | Cancelled Order Fulfilled | Marketplace says Cancelled, warehouse says Packed or Dispatched | Critical | Warehouse |
-| Carrier Moving Cancelled Order | Order is cancelled but the parcel is live in the carrier network | Critical | Carrier |
+| Carrier Moving Cancelled Order | Either side cancelled it and the parcel is live in the carrier network | Critical | Carrier |
 | Marketplace Shipped Before Dispatch | Marketplace says Shipped or Delivered, warehouse has not dispatched | High | Seller / Marketplace |
 | Dispatch Not Reflected On Marketplace | Warehouse dispatched, marketplace still Pending or Processing | Medium | Seller / Marketplace |
 | Delivered But Marketplace Not Updated | Carrier delivered, marketplace still Pending or Processing | High | Seller / Marketplace |
@@ -233,7 +233,9 @@ before it actually was. Stock dispatched against an order the marketplace feed n
 too, because the feed is the thing that broke.
 
 The carrier owns everything after the parcel leaves the building: no consignment raised, no tracking
-number, no scans, no movement, a failed delivery, or a cancelled parcel that needs intercepting.
+number, no scans, no movement, a failed delivery, or a cancelled parcel that needs intercepting. It
+does not matter which system cancelled that parcel. If it is physically moving and it should not be,
+someone has to ring the carrier.
 
 Because ownership sits on the rule rather than on the order, one order can escalate to two teams at
 once. `E2005` below does exactly that.
@@ -319,7 +321,7 @@ order-exception-checker/
 │   └── checker.py                 # pipeline and report builder
 ├── tests/
 │   ├── conftest.py                # order builder used by the rule tests
-│   └── test_checker.py            # 42 tests
+│   └── test_checker.py            # 45 tests
 ├── main.py                        # CLI
 ├── requirements.txt
 ├── pytest.ini
@@ -451,7 +453,7 @@ Tests run in CI on every push and pull request, against Python 3.10, 3.11, 3.12 
 A second CI job regenerates the synthetic data and the exception report and fails the build if
 either differs from what is committed, so the reproducibility claim above stays honest.
 
-42 tests covering:
+45 tests covering:
 
 - every exception rule, positive and negative case
 - the suppression rule between the two marketplace-update exceptions
@@ -463,7 +465,8 @@ either differs from what is committed, so the reproducibility claim above stays 
 - the end-to-end run: 42 orders, 22 exceptions, all 18 rules triggered, report shape, sort order,
   and that two consecutive runs produce an identical report
 - regressions found in review: whitespace stripping under both pandas majors, rows with no
-  `order_id`, empty source files, timezone-aware `--now`, and the feed grace periods
+  `order_id`, empty source files, timezone-aware `--now`, the feed grace periods, and that those
+  grace periods do not swallow future-dated timestamps
 
 ---
 

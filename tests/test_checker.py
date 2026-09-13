@@ -70,12 +70,23 @@ def test_shipped_while_warehouse_still_picking_escalates_to_marketplace():
 def test_dispatch_not_reflected_on_marketplace_is_flagged():
     order = make_order(
         marketplace_status="Processing", warehouse_status="Dispatched",
-        dispatched_hours_ago=10, carrier="DPD", carrier_status="In Transit",
+        dispatched_hours_ago=config.SLA_HOURS["marketplace_update"] + 6,
+        carrier="DPD", carrier_status="In Transit",
         tracking_update_hours_ago=4, tracking_number="DPD1",
     )
     assert codes(rules.check_dispatch_not_reflected(order)) == {
         "DISPATCHED_NOT_UPDATED_ON_MARKETPLACE"
     }
+
+
+def test_marketplace_is_given_a_window_to_reflect_a_dispatch():
+    """A dispatch from 30 minutes ago has not had a chance to propagate yet."""
+    order = make_order(
+        marketplace_status="Processing", warehouse_status="Dispatched",
+        placed_hours_ago=6, dispatched_hours_ago=0.5, carrier="DPD",
+        carrier_status="In Transit", tracking_update_hours_ago=0.2, tracking_number="DPD1",
+    )
+    assert rules.check_dispatch_not_reflected(order) == []
 
 
 def test_delivered_parcel_supersedes_the_dispatch_mismatch_rule():
@@ -355,11 +366,31 @@ def test_warehouse_cancellation_the_marketplace_has_not_reflected_is_caught():
     """This state used to fall through all rules: SLAs exempt it, mismatches missed it."""
     order = make_order(
         placed_hours_ago=200, marketplace_status="Processing", warehouse_status="Cancelled",
-        carrier="DPD", tracking_number="T1", carrier_status="In Transit",
-        tracking_update_hours_ago=4,
     )
     assert codes(rules.evaluate(order)) == {"WAREHOUSE_CANCELLED_NOT_ON_MARKETPLACE"}
     assert config.RULES["WAREHOUSE_CANCELLED_NOT_ON_MARKETPLACE"].owner == config.OWNER_MARKETPLACE
+
+
+def test_a_live_parcel_is_intercepted_whichever_side_cancelled():
+    """Same physical situation, so the carrier must be escalated either way."""
+    warehouse_side = make_order(
+        placed_hours_ago=80, marketplace_status="Processing", warehouse_status="Cancelled",
+        carrier="DPD", tracking_number="T1", carrier_status="Out for Delivery",
+        tracking_update_hours_ago=3,
+    )
+    marketplace_side = make_order(
+        placed_hours_ago=80, marketplace_status="Cancelled", warehouse_status="Dispatched",
+        dispatched_hours_ago=60, carrier="DPD", tracking_number="T1",
+        carrier_status="Out for Delivery", tracking_update_hours_ago=3,
+    )
+    for order in (warehouse_side, marketplace_side):
+        assert "CARRIER_ACTIVE_ON_CANCELLED_ORDER" in codes(rules.evaluate(order))
+
+    # The description names the system that actually cancelled it.
+    assert "the warehouse" in rules.check_carrier_active_on_cancelled_order(
+        warehouse_side)[0].description
+    assert "the marketplace" in rules.check_carrier_active_on_cancelled_order(
+        marketplace_side)[0].description
 
 
 def test_a_matching_cancellation_on_both_sides_raises_nothing():
@@ -396,3 +427,25 @@ def test_marketplace_update_lag_escalates_on_its_own_threshold():
     )
     finding = rules.check_dispatch_not_reflected(order)[0]
     assert finding.severity == "High"  # 2.5x the marketplace update threshold
+
+
+def test_future_dated_timestamps_are_not_swallowed_by_the_grace_periods():
+    """A negative age means a broken feed, which is exactly what this tool is for.
+
+    The grace guards were an unbounded ``age <= limit``, which is also true for
+    every negative age, so bad timestamps silently vanished from the report.
+    """
+    future_order = make_order(placed_hours_ago=-48, warehouse_status=None)
+    assert codes(rules.evaluate(future_order)) == {"MISSING_WAREHOUSE_RECORD"}
+
+    future_dispatch = make_order(
+        placed_hours_ago=20, marketplace_status="Shipped", warehouse_status="Dispatched",
+        dispatched_hours_ago=-10, carrier=None,
+    )
+    assert codes(rules.evaluate(future_dispatch)) == {"MISSING_TRACKING_RECORD"}
+
+    no_number = make_order(
+        placed_hours_ago=20, marketplace_status="Shipped", warehouse_status="Dispatched",
+        dispatched_hours_ago=-10, carrier="Evri", tracking_number=None,
+    )
+    assert "MISSING_TRACKING_NUMBER" in codes(rules.evaluate(no_number))
