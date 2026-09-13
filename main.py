@@ -43,6 +43,10 @@ def resolve_now(raw: str | None) -> datetime:
     parsed = pd.to_datetime(raw, errors="coerce")
     if pd.isna(parsed):
         raise SystemExit(f"Could not parse --now value: {raw!r}")
+    # An offset like "+01:00" parses fine but cannot be compared with the naive
+    # timestamps in the CSVs, so convert it to UTC and drop the tzinfo.
+    if parsed.tzinfo is not None:
+        parsed = parsed.tz_convert("UTC").tz_localize(None)
     return parsed.to_pydatetime()
 
 

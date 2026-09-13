@@ -103,6 +103,15 @@ SLA_HOURS = {
     "max_in_packed": 12,
     # Maximum time a live parcel may go without any tracking update.
     "tracking_stale": 48,
+    # Grace periods. Feeds arrive on a delay, so a record that is merely not
+    # there yet is not an exception. Without these, every order raises a High
+    # exception the instant it is placed and the queue fills with noise.
+    # How long the warehouse feed may lag behind a new marketplace order.
+    "warehouse_sync": 2,
+    # How long after dispatch a carrier record and tracking number may be absent.
+    "tracking_sync": 6,
+    # How long the marketplace has to catch up once the warehouse has dispatched.
+    "marketplace_update": 24,
 }
 
 # Maximum time a parcel may dwell in one non-delivered tracking status.
@@ -229,6 +238,16 @@ RULES: dict[str, RuleSpec] = {
         base_severity="Medium",
         owner=OWNER_MARKETPLACE,
         action="Update marketplace order to dispatched after verifying warehouse confirmation.",
+    ),
+    "WAREHOUSE_CANCELLED_NOT_ON_MARKETPLACE": RuleSpec(
+        label="Warehouse Cancelled, Marketplace Still Open",
+        category=CATEGORY_MISMATCH,
+        base_severity="High",
+        owner=OWNER_MARKETPLACE,
+        action=(
+            "The warehouse has cancelled order {order_id} but {customer_name} has not been told. "
+            "Confirm the cancellation, then either reinstate the order or cancel and refund."
+        ),
     ),
     "DELIVERED_BUT_MARKETPLACE_BEHIND": RuleSpec(
         label="Delivered But Marketplace Not Updated",

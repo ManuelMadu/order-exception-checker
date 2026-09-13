@@ -33,7 +33,7 @@ But sometimes they disagree, and that is when something has gone wrong.
 
 **This project is the grown-up who listens to all three and spots the arguments.**
 
-It reads what each one says, lines them up side by side, and asks 17 small questions like "does the
+It reads what each one says, lines them up side by side, and asks 18 small questions like "does the
 shop person agree with the box person?" and "has the van been quiet for too long?"
 
 Then it writes a list. The worst problems go at the top. Next to each one it writes **who needs to
@@ -79,7 +79,7 @@ data/marketplace_orders.csv ─┐
 data/warehouse_status.csv   ─┼─► load + validate ─► outer join on order_id ─► OrderView per order
 data/carrier_tracking.csv   ─┘                                                      │
                                                                                      ▼
-                                                        17 independent rules (src/rules.py)
+                                                        18 independent rules (src/rules.py)
                                                                                      │
                                                                                      ▼
                                              output/exception_report.csv (severity, owner, action)
@@ -110,7 +110,7 @@ against the real clock instead.
 
 ## Input datasets
 
-### `data/marketplace_orders.csv` (40 orders)
+### `data/marketplace_orders.csv` (41 orders)
 
 | Column | Notes |
 |---|---|
@@ -122,7 +122,7 @@ against the real clock instead.
 | `order_status` | Pending, Processing, Shipped, Delivered, Cancelled |
 | `expected_dispatch_date` | The promise made to the buyer |
 
-### `data/warehouse_status.csv` (39 records)
+### `data/warehouse_status.csv` (40 records)
 
 | Column | Notes |
 |---|---|
@@ -150,7 +150,7 @@ order behind it.
 
 ## Exception rules
 
-17 rules in four categories. Every one of them fires at least once against the bundled data, which
+18 rules in four categories. Every one of them fires at least once against the bundled data, which
 is asserted by a test.
 
 ### Missing orders
@@ -170,6 +170,7 @@ is asserted by a test.
 | Marketplace Shipped Before Dispatch | Marketplace says Shipped or Delivered, warehouse has not dispatched | High | Seller / Marketplace |
 | Dispatch Not Reflected On Marketplace | Warehouse dispatched, marketplace still Pending or Processing | Medium | Seller / Marketplace |
 | Delivered But Marketplace Not Updated | Carrier delivered, marketplace still Pending or Processing | High | Seller / Marketplace |
+| Warehouse Cancelled, Marketplace Still Open | Warehouse cancelled it, marketplace has not told the buyer | High | Seller / Marketplace |
 
 The last two overlap by definition, so the delivered rule suppresses the dispatch rule. One order,
 one message to the seller.
@@ -185,7 +186,14 @@ Thresholds come from `SLA_HOURS` in `src/config.py`.
 | Stuck In Picking | In "Picking" more than 36h after the order | Medium | Warehouse |
 | Stuck In Packed | Packed more than 12h ago and still not collected | Medium | Warehouse |
 
-Cancelled orders are exempt from all fulfilment SLAs.
+Cancelled orders are exempt from all fulfilment SLAs, with one exception. If only the warehouse has
+cancelled, the buyer is still being told the order is live, and that raises the mismatch rule above
+instead.
+
+Three more thresholds in the same block are grace periods rather than SLAs: `warehouse_sync` (2h),
+`tracking_sync` (6h) and `marketplace_update` (24h). Feeds arrive on a delay, so a record that is
+merely not there yet should not be an exception. Without them every order raises a High "missing
+record" the moment it is placed, and the queue fills with things that fix themselves.
 
 ### Missing or stale parcel tracking
 
@@ -296,8 +304,8 @@ order-exception-checker/
 ├── .github/workflows/
 │   └── tests.yml                  # CI: pytest on 3.10-3.13 + reproducibility check
 ├── data/
-│   ├── marketplace_orders.csv     # 40 synthetic orders across 3 marketplaces
-│   ├── warehouse_status.csv       # 39 fulfilment records (+1 orphan, -2 missing)
+│   ├── marketplace_orders.csv     # 41 synthetic orders across 3 marketplaces
+│   ├── warehouse_status.csv       # 40 fulfilment records (+1 orphan, -2 missing)
 │   └── carrier_tracking.csv       # 20 tracking records
 ├── output/
 │   └── exception_report.csv       # committed worked example
@@ -307,11 +315,11 @@ order-exception-checker/
 │   ├── config.py                  # SLAs, severities, owners, action templates
 │   ├── loader.py                  # load, validate, reconcile
 │   ├── models.py                  # OrderView and Finding
-│   ├── rules.py                   # the 17 detection rules
+│   ├── rules.py                   # the 18 detection rules
 │   └── checker.py                 # pipeline and report builder
 ├── tests/
 │   ├── conftest.py                # order builder used by the rule tests
-│   └── test_checker.py            # 34 tests
+│   └── test_checker.py            # 42 tests
 ├── main.py                        # CLI
 ├── requirements.txt
 ├── pytest.ini
@@ -366,23 +374,23 @@ python scripts/generate_sample_data.py
 
 ```text
 Reference time: 2026-03-16 09:00 (UTC)
-41 orders analysed
-21 exceptions detected
+42 orders analysed
+22 exceptions detected
 
   Missing orders:      4
-  Status mismatches:   5
+  Status mismatches:   6
   SLA breaches:        5
   Tracking exceptions: 7
 
   By severity
     Medium:      5
-    High:        10
+    High:        11
     Critical:    6
 
   By escalation owner
     Carrier:               9
     Warehouse:             8
-    Seller / Marketplace:  4
+    Seller / Marketplace:  5
 
 Top 8 exceptions by severity:
 order_id marketplace                 exception_type severity     escalation_owner  age_hours
@@ -398,7 +406,7 @@ order_id marketplace                 exception_type severity     escalation_owne
 Report written to output/exception_report.csv
 ```
 
-The count says 41 orders against 40 marketplace orders. The extra one is `W9001`, the warehouse
+The count says 42 orders against 41 marketplace orders. The extra one is `W9001`, the warehouse
 record with no marketplace order behind it. It gets counted because it gets checked.
 
 ---
@@ -443,7 +451,7 @@ Tests run in CI on every push and pull request, against Python 3.10, 3.11, 3.12 
 A second CI job regenerates the synthetic data and the exception report and fails the build if
 either differs from what is committed, so the reproducibility claim above stays honest.
 
-34 tests covering:
+42 tests covering:
 
 - every exception rule, positive and negative case
 - the suppression rule between the two marketplace-update exceptions
@@ -452,8 +460,10 @@ either differs from what is committed, so the reproducibility claim above stays 
 - column validation and missing-file handling
 - outer-join behaviour for one-sided records
 - null and blank handling in the source CSVs
-- the end-to-end run: 41 orders, 21 exceptions, all 17 rules triggered, report shape, sort order,
+- the end-to-end run: 42 orders, 22 exceptions, all 18 rules triggered, report shape, sort order,
   and that two consecutive runs produce an identical report
+- regressions found in review: whitespace stripping under both pandas majors, rows with no
+  `order_id`, empty source files, timezone-aware `--now`, and the feed grace periods
 
 ---
 
@@ -490,7 +500,7 @@ either differs from what is committed, so the reproducibility claim above stays 
 
 The gap I would close first is state between runs. At the moment the report cannot tell a problem it
 has never seen before from one that has been open a week, and nothing is ever marked as resolved, so
-the same 21 lines come back every morning looking new.
+the same 22 lines come back every morning looking new.
 
 After that, roughly in the order I think they would earn their keep:
 

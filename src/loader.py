@@ -13,33 +13,53 @@ class DataValidationError(Exception):
     """Raised when a source file is missing, empty or missing required columns."""
 
 
+def _clean_text(value):
+    """Strip surrounding whitespace and turn blanks into nulls.
+
+    Deliberately value-by-value rather than column-by-column. pandas 2 reads a
+    ``dtype=str`` CSV back as ``object`` dtype while pandas 3 uses ``str``, so any
+    normalisation guarded on the column dtype silently stops running on one of
+    them. Both pandas majors are in the CI matrix, so this has to hold for both.
+    """
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else pd.NA
+    return value
+
+
 def load_dataset(path: str | Path, name: str) -> pd.DataFrame:
     """Read one source CSV, check its columns and parse its timestamps."""
     path = Path(path)
     if not path.exists():
         raise DataValidationError(f"{name}: file not found at {path}")
 
-    frame = pd.read_csv(path, dtype=str, keep_default_na=True)
+    try:
+        frame = pd.read_csv(path, dtype=str, keep_default_na=True)
+    except pd.errors.EmptyDataError as error:
+        raise DataValidationError(f"{name}: file at {path} is empty") from error
+    except pd.errors.ParserError as error:
+        raise DataValidationError(f"{name}: could not parse {path}: {error}") from error
 
     required = config.REQUIRED_COLUMNS[name]
     missing = [column for column in required if column not in frame.columns]
     if missing:
         raise DataValidationError(f"{name}: missing required column(s): {', '.join(missing)}")
 
-    # Normalise the join key and drop rows that have no usable key.
-    frame["order_id"] = frame["order_id"].astype(str).str.strip()
-    frame = frame[frame["order_id"].ne("") & frame["order_id"].ne("nan")].copy()
+    # Normalise the join key, then drop rows with no usable key. A null key must
+    # not survive: two keyless rows from different files would otherwise join to
+    # each other and invent an order that exists in neither.
+    frame["order_id"] = [
+        value.strip() if isinstance(value, str) else "" for value in frame["order_id"]
+    ]
+    frame = frame[frame["order_id"] != ""].copy()
 
     for column in config.TIMESTAMP_COLUMNS[name]:
         frame[column] = pd.to_datetime(frame[column], errors="coerce")
 
-    # Blank strings become NaN so downstream null handling is uniform.
+    timestamps = set(config.TIMESTAMP_COLUMNS[name])
     for column in frame.columns:
-        if frame[column].dtype == object:
-            frame[column] = frame[column].apply(
-                lambda value: value.strip() if isinstance(value, str) else value
-            )
-            frame[column] = frame[column].replace("", pd.NA)
+        if column not in timestamps and column != "order_id":
+            frame[column] = frame[column].map(_clean_text)
 
     if "quantity" in frame.columns:
         frame["quantity"] = pd.to_numeric(frame["quantity"], errors="coerce")

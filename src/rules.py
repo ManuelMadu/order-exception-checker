@@ -43,6 +43,9 @@ def check_missing_warehouse_record(order: OrderView) -> List[Finding]:
     if order.marketplace_status == "Cancelled":
         return []  # a cancelled order never reaching the warehouse is fine
     age = order.order_age_hours
+    # Not there *yet* is not an exception; the warehouse feed arrives on a delay.
+    if age is not None and age <= SLA["warehouse_sync"]:
+        return []
     return [
         _breach(
             order,
@@ -79,6 +82,8 @@ def check_missing_tracking_record(order: OrderView) -> List[Finding]:
     if not order.warehouse_dispatched or order.has_tracking_record:
         return []
     age = order.hours_since(order.dispatched_at)
+    if age is not None and age <= SLA["tracking_sync"]:
+        return []  # the carrier feed has not caught up with the dispatch yet
     return [
         _breach(
             order,
@@ -167,7 +172,29 @@ def check_dispatch_not_reflected(order: OrderView) -> List[Finding]:
             if age is not None
             else f"Dispatched but marketplace still shows {order.marketplace_status}.",
             age,
-            SLA["warehouse_intake"],
+            SLA["marketplace_update"],
+        )
+    ]
+
+
+def check_warehouse_cancelled_not_on_marketplace(order: OrderView) -> List[Finding]:
+    """Warehouse killed the order; the marketplace is still telling the buyer it is live.
+
+    The cancellation SLA exemptions key off either side being cancelled, so
+    without this rule an order in this state falls through every other check.
+    """
+    if order.warehouse_status != "Cancelled":
+        return []
+    if order.marketplace_status is None or order.marketplace_status == "Cancelled":
+        return []
+    age = order.order_age_hours
+    return [
+        _breach(
+            order,
+            "WAREHOUSE_CANCELLED_NOT_ON_MARKETPLACE",
+            f"Warehouse cancelled the order but marketplace still shows "
+            f"{order.marketplace_status}.",
+            age,
         )
     ]
 
@@ -289,6 +316,8 @@ def check_missing_tracking_number(order: OrderView) -> List[Finding]:
     if order.tracking_number:
         return []
     age = order.hours_since(order.dispatched_at)
+    if age is not None and age <= SLA["tracking_sync"]:
+        return []  # a number may still be on its way from the carrier
     return [
         _breach(
             order,
@@ -311,6 +340,8 @@ def check_no_tracking_events(order: OrderView) -> List[Finding]:
     age = order.hours_since(order.dispatched_at)
     if age is None:
         age = order.order_age_hours
+    if age is not None and age <= SLA["tracking_sync"]:
+        return []  # the first scan has not happened yet
     return [
         _breach(
             order,
@@ -390,6 +421,7 @@ RULE_FUNCTIONS: List[Callable[[OrderView], List[Finding]]] = [
     check_carrier_active_on_cancelled_order,
     check_shipped_not_dispatched,
     check_dispatch_not_reflected,
+    check_warehouse_cancelled_not_on_marketplace,
     check_delivered_but_marketplace_behind,
     check_warehouse_intake_sla,
     check_dispatch_sla,

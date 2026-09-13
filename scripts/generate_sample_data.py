@@ -82,6 +82,9 @@ ORDERS = [
      ("Packed", 30, 26, None, "MAN-2"), None),
     ("A1015", "Amazon", 2, "Niamh Gallagher", "SKU-GRD-0204", 1, "Pending",
      ("Received", None, None, None, "LDN-1"), None),
+    # Exception: warehouse cancelled it, the buyer has not been told.
+    ("A1016", "Amazon", 60, "Ravi Chandrasekhar", "SKU-PET-0033", 1, "Processing",
+     ("Cancelled", None, None, None, "BHM-3"), None),
 
     # ---- eBay ------------------------------------------------------------
     ("E2001", "eBay", 140, "Victor Almeida", "SKU-STY-0150", 1, "Delivered",
