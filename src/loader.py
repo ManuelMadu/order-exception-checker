@@ -80,7 +80,9 @@ def reconcile(
     merged = orders.merge(warehouse, on="order_id", how="outer", validate="one_to_one")
     merged = merged.merge(tracking, on="order_id", how="outer", validate="one_to_one")
 
+    # After the outer join each flag is True or missing. ``eq`` gives a clean
+    # boolean column without the dtype downcasting that fillna would trigger.
     for flag in ("_in_marketplace", "_in_warehouse", "_in_tracking"):
-        merged[flag] = merged[flag].fillna(False).astype(bool)
+        merged[flag] = merged[flag].eq(True)
 
     return merged.sort_values("order_id").reset_index(drop=True)

@@ -1,5 +1,7 @@
 # Order Exception Checker
 
+[![tests](https://github.com/ManuelMadu/order-exception-checker/actions/workflows/tests.yml/badge.svg)](https://github.com/ManuelMadu/order-exception-checker/actions/workflows/tests.yml)
+
 Reconciles orders across three systems that never quite agree with each other, and turns the
 disagreements into a prioritised work queue with an owner attached to every line.
 
@@ -251,6 +253,8 @@ so two exceptions are raised.
 
 ```
 order-exception-checker/
+├── .github/workflows/
+│   └── tests.yml                  # CI: pytest on 3.10-3.13 + reproducibility check
 ├── data/
 │   ├── marketplace_orders.csv     # 40 synthetic orders across 3 marketplaces
 │   ├── warehouse_status.csv       # 39 fulfilment records (+1 orphan, -2 missing)
@@ -394,6 +398,10 @@ E2005  Marketplace shows Cancelled but warehouse shows Dispatched.
 ```bash
 pytest
 ```
+
+Tests run in CI on every push and pull request, against Python 3.10, 3.11, 3.12 and 3.13.
+A second CI job regenerates the synthetic data and the exception report and fails the build if
+either differs from what is committed, so the reproducibility claim above stays honest.
 
 34 tests covering:
 
