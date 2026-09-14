@@ -241,7 +241,7 @@ def test_reconcile_keeps_records_that_exist_on_only_one_side():
 
 
 def test_blank_values_are_loaded_as_nulls(project_root):
-    frame = load_dataset(project_root / config.TRACKING_FILE, "carrier_tracking")
+    frame, _ = load_dataset(project_root / config.TRACKING_FILE, "carrier_tracking")
     blank_number = frame.loc[frame["order_id"] == "E2010"].iloc[0]
     assert pd.isna(blank_number["tracking_number"])
     assert pd.isna(blank_number["last_tracking_update"])
@@ -267,11 +267,19 @@ def test_sample_data_is_analysed_end_to_end(result):
 
 def test_sample_data_exercises_every_rule(result):
     triggered = {finding.code for finding in result.findings}
-    assert triggered == set(config.RULES), f"never triggered: {set(config.RULES) - triggered}"
+    expected = set(config.RULES) - config.DATA_QUALITY_CODES
+    assert triggered == expected, f"never triggered: {expected - triggered}"
 
 
-def test_every_category_is_represented(result):
-    assert all(count > 0 for count in result.counts_by_category().values())
+def test_every_detection_category_is_represented(result):
+    counts = result.counts_by_category()
+    detection = [c for c in config.CATEGORY_ORDER if c != config.CATEGORY_DATA]
+    assert all(counts[category] > 0 for category in detection)
+
+
+def test_the_shipped_sample_data_is_itself_clean(result):
+    """The demo files should not trip the data-quality checks."""
+    assert result.counts_by_category()[config.CATEGORY_DATA] == 0
 
 
 def test_report_has_the_expected_shape(result):
@@ -328,7 +336,7 @@ def test_surrounding_whitespace_is_stripped_from_statuses(tmp_path):
         "A1,Amazon,2026-03-14 09:00:00,Buyer, SKU-1 ,1,Cancelled ,2026-03-16\n",
         encoding="utf-8",
     )
-    frame = load_dataset(path, "marketplace_orders")
+    frame, _ = load_dataset(path, "marketplace_orders")
     assert frame.loc[0, "order_status"] == "Cancelled"
     assert frame.loc[0, "sku"] == "SKU-1"
 
@@ -343,8 +351,11 @@ def test_rows_without_an_order_id_are_dropped(tmp_path):
         "W1,Dispatched,,,2026-03-15 09:00:00,LDN-1\n",
         encoding="utf-8",
     )
-    frame = load_dataset(path, "warehouse_status")
+    frame, issues = load_dataset(path, "warehouse_status")
     assert frame["order_id"].tolist() == ["W1"]
+    # Dropping them silently was the old behaviour; each one is now reported.
+    assert [issue.code for issue in issues] == ["UNIDENTIFIED_SOURCE_ROW"] * 2
+    assert "Row 2" in issues[0].description and "Row 3" in issues[1].description
 
 
 def test_empty_source_file_raises_a_clean_error(tmp_path):
@@ -449,3 +460,96 @@ def test_future_dated_timestamps_are_not_swallowed_by_the_grace_periods():
         dispatched_hours_ago=-10, carrier="Evri", tracking_number=None,
     )
     assert "MISSING_TRACKING_NUMBER" in codes(rules.evaluate(no_number))
+
+
+# ---------------------------------------------------------------------------
+# Data quality
+# ---------------------------------------------------------------------------
+def _write(path, name, rows):
+    header = ",".join(config.REQUIRED_COLUMNS[name])
+    path.write_text(header + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    return path
+
+
+def test_unparseable_timestamp_is_reported(tmp_path):
+    path = _write(tmp_path / "m.csv", "marketplace_orders",
+                  ["B1,Amazon,not-a-date,Buyer,SKU-1,1,Processing,2026-03-16"])
+    frame, issues = load_dataset(path, "marketplace_orders")
+    assert [i.code for i in issues] == ["UNPARSEABLE_TIMESTAMP"]
+    assert issues[0].order_id == "B1"
+    assert "not-a-date" in issues[0].description
+    assert pd.isna(frame.loc[0, "order_date"])
+
+
+def test_an_empty_timestamp_is_not_a_data_quality_problem(tmp_path):
+    """A blank packed_at means packing has not happened, not a broken feed."""
+    path = _write(tmp_path / "w.csv", "warehouse_status", ["B1,Picking,,,,LDN-1"])
+    _, issues = load_dataset(path, "warehouse_status")
+    assert issues == []
+
+
+def test_unknown_status_value_is_reported(tmp_path):
+    path = _write(tmp_path / "w.csv", "warehouse_status", ["B1,Dispatchd,,,,LDN-1"])
+    _, issues = load_dataset(path, "warehouse_status")
+    assert [i.code for i in issues] == ["UNKNOWN_STATUS_VALUE"]
+    assert "Dispatchd" in issues[0].description
+
+
+def test_duplicate_source_records_are_reported(tmp_path):
+    path = _write(tmp_path / "m.csv", "marketplace_orders", [
+        "B1,Amazon,2026-03-14 09:00:00,Buyer,SKU-1,1,Processing,2026-03-16",
+        "B1,Amazon,2026-03-15 09:00:00,Buyer,SKU-1,2,Shipped,2026-03-16",
+    ])
+    frame, issues = load_dataset(path, "marketplace_orders")
+    assert [i.code for i in issues] == ["DUPLICATE_SOURCE_RECORD"]
+    assert issues[0].extras["count"] == 2
+    assert len(frame) == 1
+    assert frame.loc[0, "order_status"] == "Shipped"  # last record wins
+
+
+def test_data_quality_findings_are_owned_by_the_feed_that_produced_them(tmp_path):
+    """Whoever produces the file owns what is wrong inside it."""
+    for name, filename, row, owner in [
+        ("marketplace_orders", "marketplace_orders.csv",
+         "B1,Amazon,bad,Buyer,SKU-1,1,Processing,2026-03-16", config.OWNER_MARKETPLACE),
+        ("warehouse_status", "warehouse_status.csv", "B1,Picking,bad,,,LDN-1",
+         config.OWNER_WAREHOUSE),
+        ("carrier_tracking", "carrier_tracking.csv", "B1,T1,DPD,In Transit,bad,2026-03-16",
+         config.OWNER_CARRIER),
+    ]:
+        _write(tmp_path / filename, name, [row])
+    _, _, _, issues = __import__("src.loader", fromlist=["loader"]).load_all(
+        tmp_path / "marketplace_orders.csv",
+        tmp_path / "warehouse_status.csv",
+        tmp_path / "carrier_tracking.csv",
+    )
+    findings = checker.data_issues_to_findings(issues, [], config.REFERENCE_NOW)
+    owners = {f.order.order_id: f.owner for f in findings}
+    assert set(f.owner for f in findings) == {
+        config.OWNER_MARKETPLACE, config.OWNER_WAREHOUSE, config.OWNER_CARRIER
+    }
+    assert owners  # every finding carried an owner override
+
+
+def test_data_quality_reaches_the_report_with_a_rendered_action(tmp_path):
+    for name, filename, rows in [
+        ("marketplace_orders", "marketplace_orders.csv",
+         ["B1,Amazon,not-a-date,Buyer,SKU-1,1,Processing,2026-03-16",
+          ",Amazon,2026-03-14 09:00:00,Buyer,SKU-2,1,Processing,2026-03-16"]),
+        ("warehouse_status", "warehouse_status.csv", ["B1,Picking,,,,LDN-1"]),
+        ("carrier_tracking", "carrier_tracking.csv", []),
+    ]:
+        _write(tmp_path / filename, name, rows)
+
+    outcome = checker.run_checks(
+        tmp_path / "marketplace_orders.csv",
+        tmp_path / "warehouse_status.csv",
+        tmp_path / "carrier_tracking.csv",
+    )
+    report = outcome.report
+    data_rows = report[report["exception_type"].isin(
+        [config.RULES[code].label for code in config.DATA_QUALITY_CODES]
+    )]
+    assert len(data_rows) == 2
+    assert not data_rows["suggested_action"].str.contains("{").any()
+    assert "marketplace_orders.csv" in " ".join(data_rows["suggested_action"])

@@ -159,8 +159,30 @@ CATEGORY_MISSING = "Missing orders"
 CATEGORY_MISMATCH = "Status mismatches"
 CATEGORY_SLA = "SLA breaches"
 CATEGORY_TRACKING = "Tracking exceptions"
+CATEGORY_DATA = "Data quality"
 
-CATEGORY_ORDER = [CATEGORY_MISSING, CATEGORY_MISMATCH, CATEGORY_SLA, CATEGORY_TRACKING]
+CATEGORY_ORDER = [
+    CATEGORY_MISSING,
+    CATEGORY_MISMATCH,
+    CATEGORY_SLA,
+    CATEGORY_TRACKING,
+    CATEGORY_DATA,
+]
+
+# Whoever produces a feed owns the quality of what is in it.
+FEED_OWNER = {
+    "marketplace_orders": OWNER_MARKETPLACE,
+    "warehouse_status": OWNER_WAREHOUSE,
+    "carrier_tracking": OWNER_CARRIER,
+}
+
+# Statuses each feed is allowed to contain, by file and column. Anything else is
+# a typo or an unhandled new state, and either way the order stops matching rules.
+KNOWN_STATUS_VALUES = {
+    ("marketplace_orders", "order_status"): MARKETPLACE_STATUSES,
+    ("warehouse_status", "warehouse_status"): WAREHOUSE_STATUSES,
+    ("carrier_tracking", "tracking_status"): TRACKING_STATUSES,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +346,57 @@ RULES: dict[str, RuleSpec] = {
         owner=OWNER_CARRIER,
         action="Arrange redelivery with {carrier} and tell the buyer why the first attempt failed.",
     ),
+    # -- Data quality -------------------------------------------------------
+    # Detected while loading rather than by a rule, because the evidence is gone
+    # once the frame has been cleaned. Owned by whoever produces the feed.
+    "UNIDENTIFIED_SOURCE_ROW": RuleSpec(
+        label="Source Row Without An Order ID",
+        category=CATEGORY_DATA,
+        base_severity="High",
+        owner=OWNER_MARKETPLACE,  # overridden per feed via FEED_OWNER
+        action=(
+            "Row {row} of {source_file} has no order_id and cannot be reconciled at all. "
+            "Ask whoever produces that feed to re-export it."
+        ),
+    ),
+    "DUPLICATE_SOURCE_RECORD": RuleSpec(
+        label="Duplicate Source Record",
+        category=CATEGORY_DATA,
+        base_severity="Medium",
+        owner=OWNER_MARKETPLACE,
+        action=(
+            "{source_file} carries {count} records for order {order_id}. The last one was used. "
+            "Confirm which is correct before trusting this order's status."
+        ),
+    ),
+    "UNPARSEABLE_TIMESTAMP": RuleSpec(
+        label="Unreadable Timestamp",
+        category=CATEGORY_DATA,
+        base_severity="High",
+        owner=OWNER_MARKETPLACE,
+        action=(
+            "Fix {column} on order {order_id} in {source_file}. Until then every age-based "
+            "check skips this order, so it cannot breach an SLA no matter how late it is."
+        ),
+    ),
+    "UNKNOWN_STATUS_VALUE": RuleSpec(
+        label="Unrecognised Status Value",
+        category=CATEGORY_DATA,
+        base_severity="High",
+        owner=OWNER_MARKETPLACE,
+        action=(
+            "{column} on order {order_id} is {value!r}, which is not a status this checker "
+            "knows. Correct the feed, or add the status to the vocabulary in src/config.py."
+        ),
+    ),
+}
+
+# Codes raised while loading rather than by a rule in rules.py.
+DATA_QUALITY_CODES = {
+    "UNIDENTIFIED_SOURCE_ROW",
+    "DUPLICATE_SOURCE_RECORD",
+    "UNPARSEABLE_TIMESTAMP",
+    "UNKNOWN_STATUS_VALUE",
 }
 
 # Columns of the generated exception report, in order.

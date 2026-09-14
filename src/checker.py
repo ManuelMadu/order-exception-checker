@@ -10,7 +10,7 @@ from typing import List, Optional
 import pandas as pd
 
 from . import config, loader, rules
-from .models import Finding, OrderView
+from .models import DataIssue, Finding, OrderView
 
 
 @dataclass
@@ -42,7 +42,7 @@ class CheckResult:
     def counts_by_owner(self) -> dict:
         counts: dict = {}
         for finding in self.findings:
-            owner = config.RULES[finding.code].owner
+            owner = finding.owner or config.RULES[finding.code].owner
             counts[owner] = counts.get(owner, 0) + 1
         return counts
 
@@ -63,7 +63,31 @@ def detect_exceptions(orders: List[OrderView]) -> List[Finding]:
 def _suggested_action(finding: Finding) -> str:
     """Render the configured action template with this order's context."""
     template = config.RULES[finding.code].action
-    return template.format(**finding.order.context())
+    return template.format(**{**finding.order.context(), **finding.extras})
+
+
+def data_issues_to_findings(
+    issues: List[DataIssue], orders: List[OrderView], now: datetime
+) -> List[Finding]:
+    """Turn load-time file problems into findings the report can carry.
+
+    Each is attached to its real order where one survived the load, so the
+    report still shows that order's statuses next to the problem.
+    """
+    by_id = {order.order_id: order for order in orders}
+    findings = []
+    for issue in issues:
+        order = by_id.get(issue.order_id) if issue.order_id else None
+        if order is None:
+            order = OrderView(order_id=issue.order_id or "UNKNOWN", now=now)
+        findings.append(Finding(
+            order=order,
+            code=issue.code,
+            description=issue.description,
+            owner=config.FEED_OWNER[issue.source_file],
+            extras=issue.extras,
+        ))
+    return findings
 
 
 def build_report(findings: List[Finding]) -> pd.DataFrame:
@@ -83,7 +107,7 @@ def build_report(findings: List[Finding]) -> pd.DataFrame:
                 "carrier_status": order.carrier_status or "MISSING",
                 "age_hours": finding.age_hours,
                 "severity": finding.severity or spec.base_severity,
-                "escalation_owner": spec.owner,
+                "escalation_owner": finding.owner or spec.owner,
                 "suggested_action": _suggested_action(finding),
             }
         )
@@ -111,13 +135,14 @@ def run_checks(
 ) -> CheckResult:
     """Full pipeline: load the three CSVs and produce the exception report."""
     now = now or config.REFERENCE_NOW
-    orders_df, warehouse_df, tracking_df = loader.load_all(
+    orders_df, warehouse_df, tracking_df, issues = loader.load_all(
         marketplace_path, warehouse_path, tracking_path
     )
     merged = loader.reconcile(orders_df, warehouse_df, tracking_df)
 
     order_views = build_order_views(merged, now)
     findings = detect_exceptions(order_views)
+    findings.extend(data_issues_to_findings(issues, order_views, now))
 
     return CheckResult(
         orders_analysed=len(order_views),

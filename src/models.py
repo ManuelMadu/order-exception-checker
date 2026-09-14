@@ -137,4 +137,20 @@ class Finding:
     description: str
     age_hours: Optional[float] = None
     severity: Optional[str] = None  # set by the rule when it escalates
+    owner: Optional[str] = None  # set when the owner depends on the data, not the rule
+    extras: dict = field(default_factory=dict)  # extra values for the action template
+
+
+@dataclass
+class DataIssue:
+    """A problem with a source file, found while loading it.
+
+    These cannot be found later: once ``load_dataset`` has coerced a bad
+    timestamp to NaT or dropped a keyless row, the evidence is gone.
+    """
+
+    code: str
+    source_file: str  # dataset name, e.g. "warehouse_status"
+    description: str
+    order_id: Optional[str] = None  # None when the row had no usable key
     extras: dict = field(default_factory=dict)

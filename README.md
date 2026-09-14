@@ -33,7 +33,7 @@ But sometimes they disagree, and that is when something has gone wrong.
 
 **This project is the grown-up who listens to all three and spots the arguments.**
 
-It reads what each one says, lines them up side by side, and asks 18 small questions like "does the
+It reads what each one says, lines them up side by side, and asks 22 small questions like "does the
 shop person agree with the box person?" and "has the van been quiet for too long?"
 
 Then it writes a list. The worst problems go at the top. Next to each one it writes **who needs to
@@ -79,7 +79,7 @@ data/marketplace_orders.csv ─┐
 data/warehouse_status.csv   ─┼─► load + validate ─► outer join on order_id ─► OrderView per order
 data/carrier_tracking.csv   ─┘                                                      │
                                                                                      ▼
-                                                        18 independent rules (src/rules.py)
+                                                        18 rules (src/rules.py) + 4 file checks (src/loader.py)
                                                                                      │
                                                                                      ▼
                                              output/exception_report.csv (severity, owner, action)
@@ -150,8 +150,10 @@ order behind it.
 
 ## Exception rules
 
-18 rules in four categories. Every one of them fires at least once against the bundled data, which
-is asserted by a test.
+18 detection rules in four categories, plus four data-quality checks that run while the files are
+being read. Every detection rule fires at least once against the bundled data, which is asserted by
+a test. The data-quality checks find nothing in the bundled data, which is also asserted, because the
+demo files are meant to be clean.
 
 ### Missing orders
 
@@ -204,6 +206,27 @@ record" the moment it is placed, and the queue fills with things that fix themse
 | Stale Tracking | No tracking update for more than 48h, parcel not delivered | High | Carrier |
 | Parcel Stuck In Tracking Status | Dwell beyond that status's own limit | Medium | Carrier |
 | Delivery Failed | Carrier reported a failed delivery attempt | High | Carrier |
+
+### Data quality
+
+These four run in the loader rather than in `rules.py`, because the evidence is gone by the time a
+rule could see it. Once a bad timestamp has been coerced to null and a keyless row dropped, nothing
+downstream can tell that either ever happened.
+
+| Check | Fires when | Severity | Owner |
+|---|---|---|---|
+| Source Row Without An Order ID | A row has no `order_id` and cannot be reconciled at all | High | The feed's owner |
+| Duplicate Source Record | One file holds two records for the same order | Medium | The feed's owner |
+| Unreadable Timestamp | A timestamp is present but will not parse | High | The feed's owner |
+| Unrecognised Status Value | A status is not in that feed's vocabulary | High | The feed's owner |
+
+The last two matter more than they look. An order with a broken timestamp or a status the checker
+does not recognise quietly stops matching every age-based and status-based rule, so it cannot breach
+an SLA no matter how late it is. It does not appear as a problem. It stops appearing at all. These
+checks exist so that the report says "I could not see this one" instead of silently returning fewer
+rows.
+
+Ownership follows the file: a bad row in `warehouse_status.csv` is the warehouse's to fix.
 
 Per-status dwell limits (`TRACKING_STATUS_SLA_HOURS`): Label Created 24h, Collected 48h, In Transit
 72h, Out for Delivery 24h. "Out for Delivery" is tighter than the generic staleness rule on purpose,
@@ -303,6 +326,8 @@ so two exceptions are raised.
 
 ```
 order-exception-checker/
+├── .claude/skills/order-exceptions/
+│   └── SKILL.md                   # Claude drives the checker and triages the queue
 ├── .github/workflows/
 │   └── tests.yml                  # CI: pytest on 3.10-3.13 + reproducibility check
 ├── data/
@@ -321,7 +346,7 @@ order-exception-checker/
 │   └── checker.py                 # pipeline and report builder
 ├── tests/
 │   ├── conftest.py                # order builder used by the rule tests
-│   └── test_checker.py            # 45 tests
+│   └── test_checker.py            # 52 tests
 ├── main.py                        # CLI
 ├── requirements.txt
 ├── pytest.ini
@@ -383,6 +408,7 @@ Reference time: 2026-03-16 09:00 (UTC)
   Status mismatches:   6
   SLA breaches:        5
   Tracking exceptions: 7
+  Data quality:        0
 
   By severity
     Medium:      5
@@ -443,6 +469,34 @@ E2005  Marketplace shows Cancelled but warehouse shows Dispatched.
 
 ---
 
+## Running it through Claude
+
+The repository ships a Claude Code skill at `.claude/skills/order-exceptions/SKILL.md`. Open the
+project in Claude Code and ask for it by name, or just describe the job:
+
+> Run the daily reconciliation on the files in `data/` and tell me what needs immediate attention.
+
+Claude checks the three files are present, runs `main.py`, reads the generated report, and comes
+back with something like:
+
+> 42 orders checked, 22 exceptions. Six are Critical: three Warehouse, two Carrier, one
+> Seller/Marketplace. E2005 needs two teams, because it was cancelled on eBay, dispatched by the
+> warehouse anyway, and the parcel is still moving with DPD. Ask for the escalation drafts and I
+> will write one per team.
+
+The split is the point. **Python decides, Claude communicates.** Every threshold, severity and owner
+is computed by the deterministic engine in `src/`, so two runs of the same data give the same
+answer whether or not Claude was involved. The skill does the part that is genuinely language work:
+reading a 22 row CSV, working out what an operations person needs to hear first, and drafting the
+message to the carrier.
+
+The skill is explicitly told not to re-rank severities, not to reason its way to a different answer
+than the report, and never to edit a source file to get past a validation error. It also leads with
+data-quality exceptions when there are any, because those mean the rest of the report may be
+incomplete.
+
+---
+
 ## Testing
 
 ```bash
@@ -453,7 +507,7 @@ Tests run in CI on every push and pull request, against Python 3.10, 3.11, 3.12 
 A second CI job regenerates the synthetic data and the exception report and fails the build if
 either differs from what is committed, so the reproducibility claim above stays honest.
 
-45 tests covering:
+52 tests covering:
 
 - every exception rule, positive and negative case
 - the suppression rule between the two marketplace-update exceptions
@@ -462,8 +516,10 @@ either differs from what is committed, so the reproducibility claim above stays 
 - column validation and missing-file handling
 - outer-join behaviour for one-sided records
 - null and blank handling in the source CSVs
-- the end-to-end run: 42 orders, 22 exceptions, all 18 rules triggered, report shape, sort order,
-  and that two consecutive runs produce an identical report
+- the end-to-end run: 42 orders, 22 exceptions, all 18 detection rules triggered, report shape,
+  sort order, and that two consecutive runs produce an identical report
+- all four data-quality checks, including that an empty timestamp is not mistaken for a broken one
+  and that the shipped sample data trips none of them
 - regressions found in review: whitespace stripping under both pandas majors, rows with no
   `order_id`, empty source files, timezone-aware `--now`, the feed grace periods, and that those
   grace periods do not swallow future-dated timestamps
