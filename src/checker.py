@@ -52,6 +52,21 @@ def build_order_views(merged: pd.DataFrame, now: datetime) -> List[OrderView]:
     return [OrderView.from_row(row, now) for _, row in merged.iterrows()]
 
 
+def mark_unreliable_orders(orders: List[OrderView], issues: List[DataIssue]) -> None:
+    """Flag orders whose source feeds contradict themselves.
+
+    Done before the rules run, so every finding raised against one of these
+    orders carries the warning with it rather than reading as confirmed fact.
+    """
+    by_id = {order.order_id: order for order in orders}
+    for issue in issues:
+        if issue.code != "CONFLICTING_SOURCE_RECORD" or not issue.order_id:
+            continue
+        order = by_id.get(issue.order_id)
+        if order is not None and issue.extras["source_file"] not in order.unreliable_sources:
+            order.unreliable_sources.append(issue.extras["source_file"])
+
+
 def detect_exceptions(orders: List[OrderView]) -> List[Finding]:
     """Apply every rule to every order."""
     findings: List[Finding] = []
@@ -109,6 +124,7 @@ def build_report(findings: List[Finding]) -> pd.DataFrame:
                 "severity": finding.severity or spec.base_severity,
                 "escalation_owner": finding.owner or spec.owner,
                 "suggested_action": _suggested_action(finding),
+                "unreliable_source": ", ".join(order.unreliable_sources),
             }
         )
 
@@ -141,6 +157,7 @@ def run_checks(
     merged = loader.reconcile(orders_df, warehouse_df, tracking_df)
 
     order_views = build_order_views(merged, now)
+    mark_unreliable_orders(order_views, issues)
     findings = detect_exceptions(order_views)
     findings.extend(data_issues_to_findings(issues, order_views, now))
 

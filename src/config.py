@@ -360,13 +360,24 @@ RULES: dict[str, RuleSpec] = {
         ),
     ),
     "DUPLICATE_SOURCE_RECORD": RuleSpec(
-        label="Duplicate Source Record",
+        label="Repeated Source Record",
         category=CATEGORY_DATA,
-        base_severity="Medium",
+        base_severity="Low",
         owner=OWNER_MARKETPLACE,
         action=(
-            "{source_file} carries {count} records for order {order_id}. The last one was used. "
-            "Confirm which is correct before trusting this order's status."
+            "{source_file} carries {count} identical records for order {order_id}. Nothing is at "
+            "risk because they agree, but the export is repeating rows and should be looked at."
+        ),
+    ),
+    "CONFLICTING_SOURCE_RECORD": RuleSpec(
+        label="Conflicting Source Records",
+        category=CATEGORY_DATA,
+        base_severity="High",
+        owner=OWNER_MARKETPLACE,
+        action=(
+            "{source_file} holds {count} records for order {order_id} that disagree on {columns}. "
+            "Do not act on this order until the feed owner confirms which record is correct; "
+            "every check below that reads those fields is working from a guess."
         ),
     ),
     "UNPARSEABLE_TIMESTAMP": RuleSpec(
@@ -395,6 +406,7 @@ RULES: dict[str, RuleSpec] = {
 DATA_QUALITY_CODES = {
     "UNIDENTIFIED_SOURCE_ROW",
     "DUPLICATE_SOURCE_RECORD",
+    "CONFLICTING_SOURCE_RECORD",
     "UNPARSEABLE_TIMESTAMP",
     "UNKNOWN_STATUS_VALUE",
 }
@@ -412,4 +424,8 @@ REPORT_COLUMNS = [
     "severity",
     "escalation_owner",
     "suggested_action",
+    # Names any feed that contradicts itself about this order. Blank is the
+    # normal case. When it is filled in, the statuses on that row came from a
+    # record the checker had to pick between, so treat them as unconfirmed.
+    "unreliable_source",
 ]

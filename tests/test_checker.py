@@ -495,16 +495,67 @@ def test_unknown_status_value_is_reported(tmp_path):
     assert "Dispatchd" in issues[0].description
 
 
-def test_duplicate_source_records_are_reported(tmp_path):
-    path = _write(tmp_path / "m.csv", "marketplace_orders", [
-        "B1,Amazon,2026-03-14 09:00:00,Buyer,SKU-1,1,Processing,2026-03-16",
-        "B1,Amazon,2026-03-15 09:00:00,Buyer,SKU-1,2,Shipped,2026-03-16",
-    ])
-    frame, issues = load_dataset(path, "marketplace_orders")
+def test_identical_repeated_records_are_reported_as_low(tmp_path):
+    """Rows that agree are a feed hygiene problem, not a risk to the result."""
+    row = "B1,Amazon,2026-03-14 09:00:00,Buyer,SKU-1,1,Processing,2026-03-16"
+    frame, issues = load_dataset(_write(tmp_path / "m.csv", "marketplace_orders", [row, row]),
+                                 "marketplace_orders")
     assert [i.code for i in issues] == ["DUPLICATE_SOURCE_RECORD"]
     assert issues[0].extras["count"] == 2
+    assert config.RULES["DUPLICATE_SOURCE_RECORD"].base_severity == "Low"
     assert len(frame) == 1
-    assert frame.loc[0, "order_status"] == "Shipped"  # last record wins
+
+
+def test_records_that_disagree_raise_a_high_severity_conflict(tmp_path):
+    """Last-row-wins is only defensible when the rows agree."""
+    frame, issues = load_dataset(_write(tmp_path / "m.csv", "marketplace_orders", [
+        "B1,Amazon,2026-03-14 09:00:00,Buyer,SKU-1,1,Processing,2026-03-16",
+        "B1,Amazon,2026-03-15 09:00:00,Buyer,SKU-1,2,Shipped,2026-03-16",
+    ]), "marketplace_orders")
+
+    assert [i.code for i in issues] == ["CONFLICTING_SOURCE_RECORD"]
+    assert config.RULES["CONFLICTING_SOURCE_RECORD"].base_severity == "High"
+    # The operator is told exactly which fields are contested.
+    contested = issues[0].extras["columns"]
+    assert set(contested.split(", ")) == {"order_date", "quantity", "order_status"}
+    # Something still has to be carried forward so reconciliation can run.
+    assert len(frame) == 1
+    assert frame.loc[0, "order_status"] == "Shipped"
+
+
+def test_rows_agreeing_on_nulls_are_not_a_conflict(tmp_path):
+    """Two records both missing packed_at agree about it."""
+    row = "B1,Picking,,,,LDN-1"
+    _, issues = load_dataset(_write(tmp_path / "w.csv", "warehouse_status", [row, row]),
+                             "warehouse_status")
+    assert [i.code for i in issues] == ["DUPLICATE_SOURCE_RECORD"]
+
+
+def test_a_conflict_marks_the_order_and_every_finding_it_raises(tmp_path):
+    """The contested field drives other rules, so the warning has to travel."""
+    _write(tmp_path / "marketplace_orders.csv", "marketplace_orders", [
+        "B1,eBay,2026-03-13 09:00:00,Buyer,SKU-1,1,Processing,2026-03-15",
+        "B1,eBay,2026-03-13 09:00:00,Buyer,SKU-1,1,Cancelled,2026-03-15",
+    ])
+    _write(tmp_path / "warehouse_status.csv", "warehouse_status",
+           ["B1,Dispatched,2026-03-13 12:00:00,2026-03-13 14:00:00,2026-03-13 16:00:00,LDN-1"])
+    _write(tmp_path / "carrier_tracking.csv", "carrier_tracking", [])
+
+    outcome = checker.run_checks(
+        tmp_path / "marketplace_orders.csv",
+        tmp_path / "warehouse_status.csv",
+        tmp_path / "carrier_tracking.csv",
+    )
+    report = outcome.report
+    # Every row for this order names the feed that cannot be trusted, including
+    # the Critical one that only exists because the loader picked "Cancelled".
+    assert (report["unreliable_source"] == "marketplace_orders.csv").all()
+    assert "Cancelled Order Fulfilled" in set(report["exception_type"])
+    assert "Conflicting Source Records" in set(report["exception_type"])
+
+
+def test_orders_from_clean_feeds_are_not_marked_unreliable(result):
+    assert (result.report["unreliable_source"] == "").all()
 
 
 def test_data_quality_findings_are_owned_by_the_feed_that_produced_them(tmp_path):

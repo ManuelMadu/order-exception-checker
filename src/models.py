@@ -62,6 +62,11 @@ class OrderView:
     has_warehouse_record: bool = False
     has_tracking_record: bool = False
 
+    # Feeds that contradict themselves about this order. While this is non-empty
+    # the statuses above came from a record the loader had to choose between, so
+    # anything derived from them is unconfirmed rather than wrong.
+    unreliable_sources: list = field(default_factory=list)
+
     @classmethod
     def from_row(cls, row: "pd.Series", now: datetime) -> "OrderView":
         """Build a view from one row of the reconciled dataframe."""
@@ -107,6 +112,10 @@ class OrderView:
         return self.hours_since(self.last_tracking_update)
 
     # -- convenience predicates --------------------------------------------
+    @property
+    def is_unreliable(self) -> bool:
+        return bool(self.unreliable_sources)
+
     @property
     def is_cancelled(self) -> bool:
         return "Cancelled" in (self.marketplace_status, self.warehouse_status)

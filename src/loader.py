@@ -40,6 +40,34 @@ def _clean_text(value):
     return value
 
 
+def _comparable(value):
+    """A hashable stand-in for one cell, with every flavour of null collapsed.
+
+    Two records that are both missing a ``packed_at`` agree about it, so NaN,
+    NaT and pd.NA all have to compare equal here rather than to themselves.
+    """
+    if value is None or value is pd.NaT or value is pd.NA:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _columns_that_disagree(group: pd.DataFrame) -> list[str]:
+    """Columns where the rows sharing an order_id hold different values."""
+    differing = []
+    for column in group.columns:
+        if column == "order_id":
+            continue
+        values = {_comparable(value) for value in group[column]}
+        if len(values) > 1:
+            differing.append(column)
+    return differing
+
+
 def load_dataset(path: str | Path, name: str) -> tuple[pd.DataFrame, list[DataIssue]]:
     """Read one source CSV, check its columns and parse its timestamps.
 
@@ -130,18 +158,40 @@ def load_dataset(path: str | Path, name: str) -> tuple[pd.DataFrame, list[DataIs
                 extras={"column": column, "value": value, "source_file": f"{name}.csv"},
             ))
 
+    # Repeated order ids fall into two very different cases, so they are never
+    # collapsed on the assumption that the last row is the good one.
     repeated = frame["order_id"].value_counts()
     for order_id, count in repeated[repeated > 1].items():
-        issues.append(DataIssue(
-            code="DUPLICATE_SOURCE_RECORD",
-            source_file=name,
-            order_id=order_id,
-            description=f"{name}.csv contains {count} records for order {order_id}; "
-                        f"the last one was used.",
-            extras={"count": int(count), "source_file": f"{name}.csv"},
-        ))
+        group = frame[frame["order_id"] == order_id]
+        disagreements = _columns_that_disagree(group)
+        if disagreements:
+            issues.append(DataIssue(
+                code="CONFLICTING_SOURCE_RECORD",
+                source_file=name,
+                order_id=order_id,
+                description=f"{name}.csv holds {count} records for order {order_id} that "
+                            f"disagree on {', '.join(disagreements)}. The last was used, so "
+                            f"those fields are unconfirmed.",
+                extras={
+                    "count": int(count),
+                    "columns": ", ".join(disagreements),
+                    "source_file": f"{name}.csv",
+                },
+            ))
+        else:
+            issues.append(DataIssue(
+                code="DUPLICATE_SOURCE_RECORD",
+                source_file=name,
+                order_id=order_id,
+                description=f"{name}.csv contains {count} identical records for order "
+                            f"{order_id}.",
+                extras={"count": int(count), "source_file": f"{name}.csv"},
+            ))
     if len(repeated[repeated > 1]):
-        # Keep the last record per order - source systems append corrections.
+        # Something has to be carried forward so the reconciliation can run. The
+        # last record is the usual convention, since source systems append
+        # corrections, but where the rows conflict that choice is now reported
+        # rather than assumed to be right.
         frame = frame.drop_duplicates(subset="order_id", keep="last")
 
     return frame.reset_index(drop=True), issues

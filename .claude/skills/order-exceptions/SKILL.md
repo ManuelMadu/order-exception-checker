@@ -49,12 +49,19 @@ conversation.
 
 Columns: `order_id`, `marketplace`, `exception_type`, `exception_description`, `marketplace_status`,
 `warehouse_status`, `carrier_status`, `age_hours`, `severity`, `escalation_owner`,
-`suggested_action`. Rows are already sorted worst first.
+`suggested_action`, `unreliable_source`. Rows are already sorted worst first.
+
+`unreliable_source` is blank on a healthy row. When it names a file, that file holds two records for
+the order which disagree, so the statuses on that row came from a record the checker had to choose
+between. Never present such a row as settled fact. Say the statuses are unconfirmed and name the
+file, even when the exception itself is Critical. A Critical that rests on a coin flip is exactly
+the row someone will act on first.
 
 ## 4. Brief the operator
 
 Lead with data quality if any rows have a `Data quality` exception type ("Source Row Without An
-Order ID", "Duplicate Source Record", "Unreadable Timestamp", "Unrecognised Status Value"). These
+Order ID", "Repeated Source Record", "Conflicting Source Records", "Unreadable Timestamp",
+"Unrecognised Status Value"), or if any row has a non-blank `unreliable_source`. These
 mean the rest of the report may be incomplete, because an order with a broken timestamp or an
 unrecognised status silently stops matching the other rules. Say that plainly before anything else.
 

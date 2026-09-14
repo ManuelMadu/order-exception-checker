@@ -33,7 +33,7 @@ But sometimes they disagree, and that is when something has gone wrong.
 
 **This project is the grown-up who listens to all three and spots the arguments.**
 
-It reads what each one says, lines them up side by side, and asks 22 small questions like "does the
+It reads what each one says, lines them up side by side, and asks 23 small questions like "does the
 shop person agree with the box person?" and "has the van been quiet for too long?"
 
 Then it writes a list. The worst problems go at the top. Next to each one it writes **who needs to
@@ -79,7 +79,7 @@ data/marketplace_orders.csv ─┐
 data/warehouse_status.csv   ─┼─► load + validate ─► outer join on order_id ─► OrderView per order
 data/carrier_tracking.csv   ─┘                                                      │
                                                                                      ▼
-                                                        18 rules (src/rules.py) + 4 file checks (src/loader.py)
+                                                        18 rules (src/rules.py) + 5 file checks (src/loader.py)
                                                                                      │
                                                                                      ▼
                                              output/exception_report.csv (severity, owner, action)
@@ -150,7 +150,7 @@ order behind it.
 
 ## Exception rules
 
-18 detection rules in four categories, plus four data-quality checks that run while the files are
+18 detection rules in four categories, plus five data-quality checks that run while the files are
 being read. Every detection rule fires at least once against the bundled data, which is asserted by
 a test. The data-quality checks find nothing in the bundled data, which is also asserted, because the
 demo files are meant to be clean.
@@ -216,11 +216,40 @@ downstream can tell that either ever happened.
 | Check | Fires when | Severity | Owner |
 |---|---|---|---|
 | Source Row Without An Order ID | A row has no `order_id` and cannot be reconciled at all | High | The feed's owner |
-| Duplicate Source Record | One file holds two records for the same order | Medium | The feed's owner |
+| Repeated Source Record | One file holds the same record twice, values identical | Low | The feed's owner |
+| Conflicting Source Records | One file holds two records for an order that disagree | High | The feed's owner |
 | Unreadable Timestamp | A timestamp is present but will not parse | High | The feed's owner |
 | Unrecognised Status Value | A status is not in that feed's vocabulary | High | The feed's owner |
 
-The last two matter more than they look. An order with a broken timestamp or a status the checker
+### Two records for one order are not one problem
+
+Repeated rows and contradictory rows look the same in a file and are not the same thing at all.
+
+When the rows are identical, picking the last one is harmless, because picking any of them gives the
+same answer. That is a Low finding: the export is repeating itself and somebody should tidy it, but
+nothing downstream is at risk.
+
+When the rows disagree, "last row wins" stops being a convention and becomes a guess. The checker
+still has to carry one record forward so the reconciliation can run, but it no longer presents the
+result as fact. It raises a High `Conflicting Source Records`, names the exact columns that differ,
+and marks the order unreliable.
+
+That mark travels. Every row in the report for that order carries the feed name in the
+`unreliable_source` column, blank for everything else. Here is why that matters, from a real run:
+
+```text
+order_id  exception_type                severity  unreliable_source
+X002      Cancelled Order Fulfilled     Critical  marketplace_orders.csv
+X002      Conflicting Source Records    High      marketplace_orders.csv
+```
+
+`X002` had two marketplace records, one saying `Processing` and one saying `Cancelled`. The loader
+took the last, which said `Cancelled`, and that alone produced a Critical "cancelled but the
+warehouse shipped it anyway". Had it taken the other record, that Critical exception would not
+exist. It is not wrong to show it. It is wrong to show it without saying that it rests on a coin
+flip, and an operator who starts a parcel recovery on the strength of it deserves to know.
+
+The last two checks matter more than they look. An order with a broken timestamp or a status the checker
 does not recognise quietly stops matching every age-based and status-based rule, so it cannot breach
 an SLA no matter how late it is. It does not appear as a problem. It stops appearing at all. These
 checks exist so that the report says "I could not see this one" instead of silently returning fewer
@@ -346,7 +375,7 @@ order-exception-checker/
 │   └── checker.py                 # pipeline and report builder
 ├── tests/
 │   ├── conftest.py                # order builder used by the rule tests
-│   └── test_checker.py            # 52 tests
+│   └── test_checker.py            # 56 tests
 ├── main.py                        # CLI
 ├── requirements.txt
 ├── pytest.ini
@@ -452,6 +481,9 @@ First six rows of `output/exception_report.csv`:
 | W9001 | UNKNOWN | Orphan Warehouse Dispatch | MISSING | Dispatched | In Transit | 22.0 | Critical | Seller / Marketplace |
 | E2005 | eBay | Carrier Moving Cancelled Order | Cancelled | Dispatched | In Transit | 10.0 | Critical | Carrier |
 
+A twelfth column, `unreliable_source`, is blank on every row here because the sample feeds are
+clean. It names any file that contradicts itself about that order.
+
 Two columns are dropped from the table above for width. The full file also carries
 `exception_description` (what went wrong, with the actual hours and the SLA it broke) and
 `suggested_action` (what to do about it), for example:
@@ -507,7 +539,7 @@ Tests run in CI on every push and pull request, against Python 3.10, 3.11, 3.12 
 A second CI job regenerates the synthetic data and the exception report and fails the build if
 either differs from what is committed, so the reproducibility claim above stays honest.
 
-52 tests covering:
+56 tests covering:
 
 - every exception rule, positive and negative case
 - the suppression rule between the two marketplace-update exceptions
@@ -518,8 +550,9 @@ either differs from what is committed, so the reproducibility claim above stays 
 - null and blank handling in the source CSVs
 - the end-to-end run: 42 orders, 22 exceptions, all 18 detection rules triggered, report shape,
   sort order, and that two consecutive runs produce an identical report
-- all four data-quality checks, including that an empty timestamp is not mistaken for a broken one
-  and that the shipped sample data trips none of them
+- all five data-quality checks, including that an empty timestamp is not mistaken for a broken one,
+  that two records agreeing on a null is not a conflict, and that the shipped sample data trips
+  none of them
 - regressions found in review: whitespace stripping under both pandas majors, rows with no
   `order_id`, empty source files, timezone-aware `--now`, the feed grace periods, and that those
   grace periods do not swallow future-dated timestamps
